@@ -1420,6 +1420,14 @@
   /** Used to access faster Node.js helpers. */
   var nodeUtil = (function() {
     try {
+      // Use `util.types` for Node.js 10+.
+      var types = freeModule$2 && freeModule$2.require && freeModule$2.require('util').types;
+
+      if (types) {
+        return types;
+      }
+
+      // Legacy `process.binding('util')` for Node.js < 10.
       return freeProcess && freeProcess.binding && freeProcess.binding('util');
     } catch (e) {}
   }());
@@ -1447,7 +1455,7 @@
   var isTypedArray = nodeIsTypedArray ? baseUnary(nodeIsTypedArray) : baseIsTypedArray;
 
   /**
-   * Gets the value at `key`, unless `key` is "__proto__".
+   * Gets the value at `key`, unless `key` is "__proto__" or "constructor".
    *
    * @private
    * @param {Object} object The object to query.
@@ -1455,9 +1463,15 @@
    * @returns {*} Returns the property value.
    */
   function safeGet(object, key) {
-    return key == '__proto__'
-      ? undefined
-      : object[key];
+    if (key === 'constructor' && typeof object[key] === 'function') {
+      return;
+    }
+
+    if (key == '__proto__') {
+      return;
+    }
+
+    return object[key];
   }
 
   /** Used for built-in method references. */
@@ -1766,7 +1780,7 @@
         if (isArguments(objValue)) {
           newValue = toPlainObject(objValue);
         }
-        else if (!isObject(objValue) || (srcIndex && isFunction(objValue))) {
+        else if (!isObject(objValue) || isFunction(objValue)) {
           newValue = initCloneObject(srcValue);
         }
       }
@@ -1799,8 +1813,8 @@
       return;
     }
     baseFor(source, function(srcValue, key) {
+      stack || (stack = new Stack);
       if (isObject(srcValue)) {
-        stack || (stack = new Stack);
         baseMergeDeep(object, source, key, srcIndex, baseMerge, customizer, stack);
       }
       else {
@@ -2200,6 +2214,585 @@
     }
   }
 
+  // const urlSearchParams = new URLSearchParams(window.location.search)
+  // const queryParams = Object.fromEntries(urlSearchParams.entries())
+
+  function parseQuery$1(queryString) {
+    const ind = queryString.indexOf('?');
+    if (ind < 0) return {};
+    const query = {};
+    const pairs = queryString.slice(ind + 1).split('&');
+    for (let i = 0; i < pairs.length; i++) {
+      const pair = pairs[i].split('=');
+      query[decodeURIComponent(pair[0])] = decodeURIComponent(pair[1] || '');
+    }
+    return query;
+  }
+
+  // Important to do it this way because it is difficult to handle special characters (especially #) by using URLSearchParams or window.location.search
+  const queryParams$1 = parseQuery$1(window.location.href);
+
+  const sendMessageToParent = (x, { parentOrigin }) => {
+    const parentOrOpenerWindow = queryParams$1.useOpener === '1' ? window.opener : window.parent;
+    // if no parent, this will post to itself
+    parentOrOpenerWindow.postMessage(x, parentOrigin);
+  };
+
+  // const urlSearchParams = new URLSearchParams(window.location.search)
+  // const queryParams = Object.fromEntries(urlSearchParams.entries())
+
+  function parseQuery(queryString) {
+    const ind = queryString.indexOf('?');
+    if (ind < 0) return {};
+    const query = {};
+    const pairs = queryString.slice(ind + 1).split('&');
+    for (let i = 0; i < pairs.length; i++) {
+      const pair = pairs[i].split('=');
+      query[decodeURIComponent(pair[0])] = decodeURIComponent(pair[1] || '');
+    }
+    return query;
+  }
+
+  // Important to do it this way because it is difficult to handle special characters (especially #) by using URLSearchParams or window.location.search
+  const queryParams = parseQuery(window.location.href);
+
+  const pendingRequests = {};
+
+  const handleFigurlResponse = (msg) => {
+    const requestId = msg.requestId;
+    const response = msg.response;
+    if (requestId in pendingRequests) {
+      pendingRequests[requestId].onResponse(response);
+      delete pendingRequests[requestId];
+    }
+  };
+
+  let initalizationData = undefined;
+  const _initializationCallbacks = [];
+  window.addEventListener('message', (e) => {
+    if (initalizationData) return;
+    const msg = e.data;
+    if (msg.type === 'initializeFigure') {
+      initalizationData = {
+        parentOrigin: msg.parentOrigin,
+        figureId: msg.figureId,
+        s: msg.s,
+      };
+      _initializationCallbacks.forEach((cb) => {
+        cb();
+      });
+    }
+  });
+
+  const onInitialized = (callback) => {
+    if (initalizationData) {
+      callback();
+    } else {
+      _initializationCallbacks.push(callback);
+    }
+  };
+
+  const waitForInitialization = () => {
+    return new Promise((resolve, reject) => {
+      const figureId = queryParams.figureId;
+      const parentOrigin = queryParams.parentOrigin;
+      const s = queryParams.s || '';
+      if (figureId !== undefined && parentOrigin !== undefined) {
+        resolve({ parentOrigin, figureId, s });
+      } else {
+        onInitialized(() => {
+          if (!initalizationData) throw Error('unexpected');
+          resolve({
+            parentOrigin: initalizationData.parentOrigin,
+            figureId: initalizationData.figureId,
+            s: initalizationData.s,
+          });
+        });
+      }
+    });
+  };
+
+  const sendRequestToParent = (request) => {
+    return new Promise((resolve, reject) => {
+      waitForInitialization().then(({ figureId, parentOrigin }) => {
+        const requestId = randomAlphaString(10);
+        let completed = false;
+        pendingRequests[requestId] = {
+          onResponse: (response) => {
+            if (completed) return;
+            completed = true;
+            resolve(response);
+          },
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          onError: (err) => {
+            if (completed) return;
+            completed = true;
+            reject(err);
+          },
+        };
+        const msg = {
+          type: 'figurlRequest',
+          figureId,
+          requestId,
+          request,
+        };
+        sendMessageToParent(msg, { parentOrigin });
+      })
+      .catch((err) => {
+        reject(err);
+      });
+    });
+  };
+
+  const randomAlphaString = (num_chars) => {
+    if (!num_chars) {
+      throw Error('randomAlphaString: num_chars needs to be a positive integer.');
+    }
+    let text = '';
+    const possible = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz';
+    for (let i = 0; i < num_chars; i++) {
+      text += possible.charAt(Math.floor(Math.random() * possible.length));
+    }
+    return text;
+  };
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const deserializeReturnValue = (x) => {
+    if (!x) return x;
+    else if (typeof x === 'object') {
+      if (Array.isArray(x)) {
+        return x.map((a) => deserializeReturnValue(a));
+      } else if (x._type === 'ndarray') {
+        const shape = x.shape;
+        const dtype = x.dtype;
+        const data_b64 = x.data_b64;
+        const dataBuffer = _base64ToArrayBuffer(data_b64);
+        switch (dtype) {
+          case 'float32':
+            return applyShape(new Float32Array(dataBuffer), shape);
+          case 'int32':
+            return applyShape(new Int32Array(dataBuffer), shape);
+          case 'int16':
+            return applyShape(new Int16Array(dataBuffer), shape);
+          case 'int8':
+            return applyShape(new Int8Array(dataBuffer), shape);
+          case 'uint32':
+            return applyShape(new Uint32Array(dataBuffer), shape);
+          case 'uint16':
+            return applyShape(new Uint16Array(dataBuffer), shape);
+          case 'uint8':
+            return applyShape(new Uint8Array(dataBuffer), shape);
+          default:
+            throw Error(`Datatype not yet implemented for ndarray: ${dtype}`);
+        }
+      } else {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const ret = {};
+        for (const k in x) {
+          ret[k] = deserializeReturnValue(x[k]);
+        }
+        return ret;
+      }
+    } else return x;
+  };
+
+  const applyShape = (
+    x,
+    shape
+  ) => {
+    if (shape.length === 1) {
+      if (shape[0] !== x.length) throw Error('Unexpected length of array');
+      return Array.from(x);
+    } else if (shape.length === 2) {
+      const n1 = shape[0];
+      const n2 = shape[1];
+      if (n1 * n2 !== x.length) throw Error('Unexpected length of array');
+      const ret = [];
+      for (let i1 = 0; i1 < n1; i1++) {
+        ret.push(Array.from(x.slice(i1 * n2, (i1 + 1) * n2)));
+      }
+      return ret;
+    } else if (shape.length === 3) {
+      const n1 = shape[0];
+      const n2 = shape[1];
+      const n3 = shape[2];
+      if (n1 * n2 * n3 !== x.length) throw Error('Unexpected length of array');
+      const ret = [];
+      for (let i1 = 0; i1 < n1; i1++) {
+        const A = [];
+        for (let i2 = 0; i2 < n2; i2++) {
+          A.push(Array.from(x.slice(i1 * n2 * n3 + i2 * n3, i1 * n2 * n3 + (i2 + 1) * n3)));
+        }
+        ret.push(A);
+      }
+      return ret;
+    } else if (shape.length === 4) {
+      const n1 = shape[0];
+      const n2 = shape[1];
+      const n3 = shape[2];
+      const n4 = shape[3];
+      if (n1 * n2 * n3 * n4 !== x.length) throw Error('Unexpected length of array');
+      const ret = [];
+      for (let i1 = 0; i1 < n1; i1++) {
+        const A = [];
+        for (let i2 = 0; i2 < n2; i2++) {
+          const B = [];
+          for (let i3 = 0; i3 < n3; i3++) {
+            B.push(
+              Array.from(
+                x.slice(i1 * n2 * n3 * n4 + i2 * n3 * n4 + i3 * n4, i1 * n2 * n3 * n4 + i2 * n3 * n4 + (i3 + 1) * n4)
+              )
+            );
+          }
+          A.push(B);
+        }
+        ret.push(A);
+      }
+      return ret;
+    } else if (shape.length === 5) {
+      const n1 = shape[0];
+      const n2 = shape[1];
+      const n3 = shape[2];
+      const n4 = shape[3];
+      const n5 = shape[4];
+      if (n1 * n2 * n3 * n4 * n5 !== x.length) throw Error('Unexpected length of array');
+      const request = [];
+      for (let i1 = 0; i1 < n1; i1++) {
+        const A = [];
+        for (let i2 = 0; i2 < n2; i2++) {
+          const B = [];
+          for (let i3 = 0; i3 < n3; i3++) {
+            const C = [];
+            for (let i4 = 0; i4 < n4; i4++) {
+              C.push(
+                Array.from(
+                  x.slice(
+                    i1 * n2 * n3 * n4 * n5 + i2 * n3 * n4 * n5 + i3 * n4 * n5 + i4 * n5,
+                    i1 * n2 * n3 * n4 * n5 + i2 * n3 * n4 * n5 + i3 * n4 * n5 + (i4 + 1) * n5
+                  )
+                )
+              );
+            }
+            B.push(C);
+          }
+          A.push(B);
+        }
+        ret.push(A);
+      }
+      return ret;
+    } else {
+      throw Error('Not yet implemented');
+    }
+  };
+
+  const _base64ToArrayBuffer = (base64) => {
+    const binary_string = window.atob(base64);
+    const len = binary_string.length;
+    const bytes = new Uint8Array(len);
+    for (let i = 0; i < len; i++) {
+      bytes[i] = binary_string.charCodeAt(i);
+    }
+    return bytes.buffer;
+  };
+
+  const getFigureData = () => {
+    return new Promise((resolve, reject) => {
+      const request = {
+        type: 'getFigureData',
+        figurlProtocolVersion: 'p1'
+      };
+      sendRequestToParent(request).then(response => {
+        resolve(deserializeReturnValue(response.figureData));
+      }).catch((err) => {
+        reject(err);
+      })
+    })
+  };
+
+  const getFileData = (
+    uri,
+    responseType,
+    onProgress,
+    o = {}
+  ) => {
+    let responseType2
+    if (responseType === 'json-deserialized') {
+      responseType2 = 'json'
+    }
+    else {
+      responseType2 = responseType
+    }
+    const request = {
+      type: 'getFileData',
+      uri,
+      responseType: responseType2,
+      figurlProtocolVersion: 'p1'
+    };
+    if (o.startByte !== undefined) {
+      request.startByte = o.startByte;
+      request.endByte = o.endByte;
+    }
+    progressListeners[uri] = ({ loaded, total }) => {
+      onProgress({ loaded, total });
+    };
+    return new Promise((resolve, reject) => {
+      sendRequestToParent(request).then(response => {
+        if (!isGetFileDataResponse(response)) throw Error('Invalid response to getFigureData');
+        if (response.errorMessage) {
+          throw Error(`Error getting file data for ${uri}: ${response.errorMessage}`);
+        }
+        if (responseType === 'json-deserialized') {
+          resolve(deserializeReturnValue(response.fileData));
+        }
+        else {
+          resolve(response.fileData);
+        }
+      })
+      .catch((err) => {
+        reject(err);
+      })
+    })
+  };
+
+  // export const storeFileData = async (fileData, o = {}) => {
+  //   const request = {
+  //     type: 'storeFile',
+  //     fileData,
+  //     figurlProtocolVersion: 'p1'
+  //   };
+  //   const response = await sendRequestToParent(request);
+  //   if (!isStoreFileResponse(response)) throw Error('Invalid response to storeFile');
+  //   if (response.error) {
+  //     throw Error(`Error storing file data: ${response.error}`);
+  //   }
+  //   if (response.uri === undefined) {
+  //     throw Error('Unexpected response.uri is undefined');
+  //   }
+  //   return response.uri;
+  // };
+
+  // export const storeGithubFileData = async (o) => {
+  //   const request = {
+  //     type: 'storeGithubFile',
+  //     fileData: o.fileData,
+  //     uri: o.uri,
+  //     figurlProtocolVersion: 'p1'
+  //   };
+  //   const response = await sendRequestToParent(request);
+  //   if (!isStoreGithubFileResponse(response)) throw Error('Invalid response to storeFile');
+  //   if (response.error) {
+  //     throw Error(`Error storing file data: ${response.error}`);
+  //   }
+  // };
+
+  const progressListeners = {};
+
+  const handleFileDownloadProgress = ({
+    uri,
+    loaded,
+    total,
+  }) => {
+    const x = progressListeners[uri];
+    if (x) {
+      x({ loaded, total });
+    }
+  };
+
+  // import { handleReportUrlStateChange } from './SetupUrlState';
+
+  // const urlSearchParams = new URLSearchParams(window.location.search)
+  // const queryParams = Object.fromEntries(urlSearchParams.entries())
+
+  const handleSetCurrentUser = (o) => {
+    console.warn('Not implemented: handleSetCurrentUser', o);
+  };
+
+  function parseQuery$2(queryString) {
+    const ind = queryString.indexOf('?');
+    if (ind < 0) return {};
+    const query = {};
+    const pairs = queryString.slice(ind + 1).split('&');
+    for (let i = 0; i < pairs.length; i++) {
+      const pair = pairs[i].split('=');
+      query[decodeURIComponent(pair[0])] = decodeURIComponent(pair[1] || '');
+    }
+    return query;
+  }
+
+  // Important to do it this way because it is difficult to handle special characters (especially #) by using URLSearchParams or window.location.search
+  const queryParams$2 = parseQuery$2(window.location.href);
+
+  // if (!queryParams.parentOrigin) {
+  //     // self-contained bundle
+  //     const s = document.createElement("script");
+  //     s.setAttribute("src", "figurlData.js");
+  //     document.body.appendChild(s);
+  // }
+
+  const startListeningToParent = () => {
+    window.addEventListener('message', (e) => {
+      const msg = e.data;
+      if (!msg) return;
+      const messageToChildTypes = ['figurlResponse', 'setCurrentUser', 'fileDownloadProgress', 'reportUrlStateChange']
+      const messageToParentTypes = ['figurlRequest']
+      if (messageToChildTypes.includes(msg.type)) {
+        if (msg.type === 'figurlResponse') {
+          handleFigurlResponse(msg);
+        } else if (msg.type === 'setCurrentUser') {
+          handleSetCurrentUser({
+            userId: msg.userId,
+            googleIdToken: msg.googleIdToken,
+          });
+        } else if (msg.type === 'fileDownloadProgress') {
+          handleFileDownloadProgress({
+            uri: msg.uri,
+            loaded: msg.loaded,
+            total: msg.total,
+          });
+        } else if (msg.type === 'reportUrlStateChange') {
+          console.warn('Not supported: reportUrlStateChange')
+          // handleReportUrlStateChange(msg.state);
+        }
+      } else if (messageToParentTypes.includes(msg.type)) {
+        // this is relevant for standalone (self-contained) figures
+        if (queryParams$2.parentOrigin) {
+          console.warn('Got message to parent even though parentOrigin is defined');
+          return;
+        }
+        if (msg.type === 'figurlRequest') {
+          const req = msg.request;
+          if (req.type === 'getFigureData') {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const figureData = (window).figurlData.figure;
+            const resp = {
+              type: 'getFigureData',
+              figureData,
+            };
+            const msg2 = {
+              type: 'figurlResponse',
+              requestId: msg.requestId,
+              response: resp,
+            };
+            window.postMessage(msg2, '*');
+          } else if (req.type === 'getFileData') {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const fileData = (window).figurlData.uri[req.uri];
+            const resp = {
+              type: 'getFileData',
+              fileData,
+            };
+            const msg2 = {
+              type: 'figurlResponse',
+              requestId: msg.requestId,
+              response: resp,
+            };
+            window.postMessage(msg2, '*');
+          }
+        }
+      } else {
+        console.warn('Unhandled message from parent', e);
+      }
+    });
+  };
+
+  let figurlObjectLoadState = "not-loaded";
+
+  function fetchFigurlObject() {
+    return new Promise((resolve, reject) => {
+      getFigureData().then((data) => {
+        resolve(data)
+      }).catch((err) => {
+        reject(err)
+      });
+    });
+  }
+
+  function getFigurlObject(callback) {
+    // check if this window is the top-level window
+    if (window === window.parent) {
+      // this is the top-level window, so it is not being embedded in an iframe
+      callback(null, null);
+      return
+    }
+
+    if (figurlObjectLoadState === "loading") {
+      setTimeout(() => {
+        getFigurlObject(callback);
+      }, 10);
+    } else if (figurlObjectLoadState === "loaded") {
+      callback(null, window.figurlObject);
+    } else if (figurlObjectLoadState === "error") {
+      callback("Error loading figurlObject", null);
+    } else {
+      figurlObjectLoadState = "loading";
+      // fetch("figurl_data.json")
+      // .then((response) => response.json())
+      fetchFigurlObject()
+        .then((figurlObject) => {
+          window.figurlObject = figurlObject;
+          figurlObjectLoadState = "loaded";
+          callback(null, figurlObject);
+        })
+        .catch((error) => {
+          figurlObjectLoadState = "error";
+          callback(error, null);
+        });
+    }
+  }
+
+  function loadTrialInfo(callback) {
+    getFigurlObject((err, figurlObject) => {
+      if (figurlObject) {
+        callback(null, figurlObject.objects["trialInfo"]);
+      } else {
+        fetch("DATA/" + "trialInfo.json")
+          .then((response) => response.json())
+          .then((trialInfo) => {
+            callback(null, trialInfo);
+          })
+          .catch((error) => {
+            callback(error, null);
+          });
+      }
+    });
+  }
+
+  function loadSessionTrialData(sessionName, callback) {
+    getFigurlObject((err, figurlObject) => {
+      if (figurlObject) {
+        callback(null, figurlObject.objects[sessionName + "_TrialInfo"]);
+      } else {
+        fetch("DATA/" + sessionName + "_TrialInfo.json")
+          .then((response) => response.json())
+          .then((trialData) => {
+            callback(null, trialData);
+          })
+          .catch((error) => {
+            callback(error, null);
+          });
+      }
+    });
+  }
+
+  function loadNeuronData(neuronName, callback) {
+    getFigurlObject((err, figurlObject) => {
+      if (figurlObject) {
+        callback(null, figurlObject.objects["Neuron_" + neuronName]);
+      } else {
+        fetch("DATA/Neuron_" + neuronName + ".json")
+          .then((response) => response.json())
+          .then((neuron) => {
+            callback(null, neuron);
+          })
+          .catch((error) => {
+            callback(error, null);
+          });
+      }
+    });
+  }
+
+  startListeningToParent();
+
   function rasterDataManger() {
     let neuronName = '';
     let sessionName = '';
@@ -2226,8 +2819,7 @@
 
     dataManager.loadRasterData = function () {
       isLoaded = false;
-
-      d3.json('DATA/' + 'trialInfo.json', function (error, trialInfo) {
+      loadTrialInfo((error, trialInfo) => {
         factorList = trialInfo.experimentalFactor;
         trialEvents = trialInfo.timePeriods;
         neuronList = trialInfo.neurons;
@@ -2246,8 +2838,8 @@
         Subject = neuronInfo.subjectName;
 
         queue()
-          .defer(d3.json, 'DATA/' + sessionName + '_TrialInfo.json')
-          .defer(d3.json, 'DATA/Neuron_' + neuronName + '.json')
+          .defer(loadSessionTrialData, sessionName)
+          .defer(loadNeuronData, neuronName)
           .await(function (error, sI, neuron) {
             spikeInfo = neuron.Spikes;
             brainArea = neuron.Brain_Area;

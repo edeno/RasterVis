@@ -1,3 +1,5 @@
+dist
+package-lock.json
 *.mat
 *.json
 !public/DATA/*HPa_01_04_*.json

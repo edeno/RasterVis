@@ -1,6 +1,7 @@
 import merge from '../../node_modules/lodash-es/merge';
 import queue from '../../node_modules/d3-queue/src/queue';
 import loading from './loading';
+import {loadTrialInfo, loadSessionTrialData, loadNeuronData} from './loadData';
 
 export default function () {
   let neuronName = '';
@@ -28,8 +29,7 @@ export default function () {
 
   dataManager.loadRasterData = function () {
     isLoaded = false;
-
-    d3.json('DATA/' + 'trialInfo.json', function (error, trialInfo) {
+    loadTrialInfo((error, trialInfo) => {
       factorList = trialInfo.experimentalFactor;
       trialEvents = trialInfo.timePeriods;
       neuronList = trialInfo.neurons;
@@ -49,8 +49,8 @@ export default function () {
       Subject = neuronInfo.subjectName;
 
       queue()
-        .defer(d3.json, 'DATA/' + sessionName + '_TrialInfo.json')
-        .defer(d3.json, 'DATA/Neuron_' + neuronName + '.json')
+        .defer(loadSessionTrialData, sessionName)
+        .defer(loadNeuronData, neuronName)
         .await(function (error, sI, neuron) {
           spikeInfo = neuron.Spikes;
           brainArea = neuron.Brain_Area;
